@@ -147,46 +147,12 @@ class ParamUnpacker:
         Q_c = self.S @ L @ L.T @ self.S
         return Q_c
 
-        # Q_ch = jnp.zeros((self.sys.n_x, self.sys.n_x))
-        # # Q_ch = jnp.linalg.cholesky(jnp.eye(self.sys.n_x) * self.eps)
-        # # Consntruct cholesky decomposed process noise matrix
-        # counter = 0  # First theta in vector - can index from 0
-        # for i, x_idx in enumerate(self.q_idx_init.keys()):  # colum
-        #     # row
-        #     for x_jdx in list(self.q_idx_init.keys())[: i + 1]:
-        #         # Scale by average init diagonal covariance
-        #         if x_idx == x_jdx:
-        #             Q_ch = Q_ch.at[x_idx, x_jdx].set(
-        #                 (1 + theta[counter] * self.theta_scale[counter]) * self.q0[counter]
-        #             )
-        #         else:
-        #             Q_ch = Q_ch.at[x_idx, x_jdx].set(
-        #                 theta[counter] * self.theta_scale[counter]
-        #             )
-        #         counter += 1
-        # Q_s = Q_ch @ Q_ch.T
-        # return Q_s
-
     def ob_param(self, theta):
         params = self.theta_ob_init + (
             theta[self.ob_slice] * self.theta_scale[self.ob_slice]
         )
         ll_ob = log_likelihood(params, self.theta_ob_init, self.theta_ob_cov)
         return params, ll_ob
-
-    # def get_q0(self):
-        # q0 = jnp.zeros(self.n_q)
-        # # q0 = jnp.full(self.n_q, self.eps)
-        # # Add small diagonal noise to avoid singularity for cholesky decomposition
-        # Q_ch0 = jnp.linalg.cholesky(self.Q_0 + jnp.eye(self.sys.n_x) * self.eps)
-        # counter = 0
-        # for i, x_idx in enumerate(self.q_idx_init.keys()):  # colum
-        #     for x_jdx in list(self.q_idx_init.keys())[: i + 1]:
-        #         q0 = q0.at[counter].set(
-        #             Q_ch0[x_idx, x_jdx]
-        #         )
-        #         counter += 1
-        # return q0
 
     @property
     def init_vals(self):
@@ -202,31 +168,9 @@ class ParamUnpacker:
         with open(filename, "w") as f:
             yaml.dump(theta_dict, f, default_flow_style=False, sort_keys=False)
 
-    #
-    # def load_theta(self, filename):
-    #     """Load the theta vector from a file"""
-    #     with open(filename, "r") as f:
-    #         theta_dict = yaml.safe_load(f)
-    #     theta = jnp.array([theta_dict[k] for k in self.theta_idx.keys()])
-    #     return theta
-
     def print_theta(self, theta):
         print_dict = self.to_dict(theta)
         pprint(print_dict, expand_all=True)
-        # """Print the theta vector in a readable format"""
-        # print("-----Unpacked parameter vector-----")
-        # Q_diag = jnp.diag(self.Qc(theta))
-        # x0, _ = self.x0(theta)
-        # bias, _ = self.ob_param(theta)
-        # print("    Q diagonal:")
-        # for q, x_idx in zip(Q_diag, self.sys.x_idx.values()):
-        #     print(f"    q_{x_idx}: {q:.6f}")
-        # print("Initial state x0:")
-        # for key, value in self.sys.x_idx.items():
-        #     print(f"    {key}_0: {x0[value]:.6f}")
-        # print("Bias values:")
-        # for key, value in bias.items():
-        #     print(f"    {key}: {value:.6f}")
 
     def to_dict(self, theta):
         """Convert the theta vector to a dictionary format"""

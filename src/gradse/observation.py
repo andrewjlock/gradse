@@ -84,27 +84,6 @@ class Step:
     mask: Array  # Mask of observations at this step
 
 
-# @jax.tree_util.register_dataclass
-# @dataclass
-# class Measurement:
-#     i: Array
-#     t: Array
-#     y: Array
-#     R: Array
-#     obs_idx: Array
-#
-#     def slice(self, start: int, length: int) -> "Measurement":
-#         return Measurement(
-#             i=jax.lax.dynamic_slice(self.i, (start,), (length,)),
-#             t=jax.lax.dynamic_slice(self.t, (start,), (length,)),
-#             y=jax.lax.dynamic_slice(self.y, (start, jnp.array(0)), (length, self.y.shape[1])),
-#             R=jax.lax.dynamic_slice(
-#                 self.R, (start, jnp.array(0), jnp.array(0)), (length, self.R.shape[1], self.R.shape[2])
-#             ),
-#             obs_idx=jax.lax.dynamic_slice(self.obs_idx, (start,), (length,)),
-#         )
-
-
 class ObservationManager:
     obs: Tuple[Observation, ...]
     n_obs: int
@@ -144,33 +123,6 @@ class ObservationManager:
 
     def ob_idx(self, name: str) -> int:
         return self._ob_idx[name]
-
-    # def step_y(self, i: int) -> Array:
-    #     step = self.steps[i]
-    #     y = jnp.zeros(self.n_y)
-    #     for i in range(step.m_start, step.m_start + step.m_count):
-    #         ob_idx = self.meas[i].obs_idx
-    #         sl = self.y_slices[ob_idx]
-    #         y = y.at[sl].set(self.meas[i].y)
-    #     return y
-    #
-    # def step_R(self, i: int) -> Array:
-    #     step = self.steps[i]
-    #     R = jnp.zeros((self.n_y, self.n_y))
-    #     for i in range(step.m_start, step.m_start + step.m_count):
-    #         ob_idx = self.meas[i].obs_idx
-    #         sl = self.y_slices[ob_idx]
-    #         R = R.at[sl, sl].set(self.meas[i].R)
-    #     return R
-    #
-    # def step_mask(self, i: int) -> Array:
-    #     step = self.steps[i]
-    #     mask = jnp.zeros(self.n_y)
-    #     for i in range(step.m_start, step.m_start + step.m_count):
-    #         ob_idx = self.meas[i].obs_idx
-    #         sl = self.y_slices[ob_idx]
-    #         mask = mask.at[sl].set(1.0)
-    #     return mask
 
     def construct_steps(
         self,
@@ -236,11 +188,6 @@ class ObservationManager:
             return lambda x, t, params: f(x, t, params[s])
 
         hx_list = [make_hx(ob.hx, sl) for ob, sl in zip(obs, param_slicer.slices)]
-
-        # hx_list = [
-        #     lambda x, t, params: hx(x, t, params[sl])
-        #     for hx, sl in zip([ob.hx for ob in obs], param_slicer.slices)
-        # ]
 
         @jax.jit
         def hx_dispatcher(x: Array, t: Array, params: Array, idx: Array) -> Array:

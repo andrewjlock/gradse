@@ -82,45 +82,18 @@ class DynamicSystem(ABC):
         (x,), _ = jax.lax.scan(scan_step, (x,), None, length=n_steps)
         return x
 
-    # @partial(jax.jit, static_argnames=["self", "n_steps"])
-    # def multiple_steps_loop(self, x, dt, n_steps=1):
-    #     """Integrate in time using RK4 integrator for multiple steps."""
-    #     dt_step = dt / n_steps
-    #
-    #     def scan_step(carry, _):
-    #             x, = carry
-    #             x_new = self._step(dt_step, x)
-    #             return (x_new,), x_new
-    #
-    #     (x,), _ = jax.lax.scan(scan_step, (x,), None, length=n_steps)
-    #     return x
 
-    # @partial(jax.jit, static_argnames=["self"])
     def rk_integrate(self, x: Array, dt: float, dt_max: float = 0.5) -> Array:
         """Integrate in time using RK4 integrator.
 
         Ensure maximum step size does not exceed that specified.
-        """
-        # n_steps = jnp.maximum(1, jnp.ceil(jnp.abs(dt / dt_max)).astype(int))
-        # dt_step = dt / n_steps
 
+        Note: Currently only supports a single step. Extending for dynamic number of steps
+        is a work in progress to ensure efficienet Jax JIT and reverse AD compatibility.
+
+        """
         # One step
         x = self._step(dt, x)
-
-        # Use lax.scan for JIT compilation
-        # Note: variable timestemps doesn't work with AD
-        # x = self.multiple_steps_scan(x, dt_step, n_steps=n_steps)
-
-        # Use lax.fori_loop for JIT compilation
-        # def body(i, val):
-        #     x, = val
-        #     x_new = self._step(dt_step, x)
-        #     return (x_new,)
-        # x, = lax.fori_loop(0, n_steps, body, (x,))
-
-        # Plain python
-        # for _ in range(steps.astype(int)):
-        #     x = self._step(dt_step, x)
         return x
 
     @partial(jax.jit, static_argnames=["self"])

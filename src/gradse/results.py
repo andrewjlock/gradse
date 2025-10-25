@@ -9,7 +9,6 @@ import pandas as pd
 import pickle as pkl
 
 
-
 @dataclass(repr=False, frozen=True)
 class FilterStepResult:
     x_priori: Array
@@ -129,47 +128,6 @@ class ForwardResult:
         """Save the forward results to a pickle file."""
         with open(filepath, "wb") as f:
             pkl.dump(self, f)
-
-    # def plot_residual(self):
-    #     import matplotlib.pyplot as plt
-    #
-    #     residual = self.y - self.z
-    #     plt.figure(figsize=(10, 6))
-    #     for i in range(residual.shape[1]):
-    #         plt.plot(self.t, residual[:, i], label=f"Residual {i}")
-    #     plt.xlabel("Time")
-    #     plt.ylabel("Residual")
-    #     plt.title("Residuals Over Time")
-    #     plt.show()
-
-
-# class FilterResult:
-#     def __init__(self, step_results: List[FilterStepResult] = []):
-#         self.step_results = step_results
-#         self.x_rts = []
-#         self.P_rts = []
-#
-#     def clear(self):
-#         self.step_results = []
-#         self.x_rts = []
-#         self.P_rts = []
-#
-#     def __getattr__(self, name):
-#         try:
-#             return jnp.array([getattr(s, name) for s in self.step_results])
-#         except Exception as error:
-#             print(error.args)
-#             print("Can't access attribute: "+name+" in FilterResult")
-#             raise
-#
-#     def append(self, new_result: FilterStepResult):
-#         if not isinstance(new_result, FilterStepResult):
-#             raise ValueError("Trying to append bad type to FilterResult")
-#         self.step_results.append(new_result)
-#
-#     def add_smoothed(self, x, P):
-#         self.x_rts = x
-#         self.P_rts = P
 
 
 def save_results(
