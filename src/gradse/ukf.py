@@ -96,74 +96,6 @@ def unscented_transform(
     returns the mean and covariance in a tuple.
 
     This works in conjunction with the UnscentedKalmanFilter class.
-
-
-    Parameters
-    ----------
-
-    sigmas: ndarray, of size (n, 2n+1)
-        2D array of sigma points.
-
-    Wm : ndarray [# sigmas per dimension]
-        Weights for the mean.
-
-
-    Wc : ndarray [# sigmas per dimension]
-        Weights for the covariance.
-
-    noise_cov : ndarray, optional
-        noise matrix added to the final computed covariance matrix.
-
-    mean_fn : callable (sigma_points, weights), optional
-        Function that computes the mean of the provided sigma points
-        and weights. Use this if your state variable contains nonlinear
-        values such as angles which cannot be summed.
-
-        .. code-block:: Python
-
-            def state_mean(sigmas, Wm):
-                x = np.zeros(3)
-                sum_sin, sum_cos = 0.0, 0.0
-
-                for i in range(len(sigmas)):
-                    s = sigmas[i]
-                    x[0] += s[0] * Wm[i]
-                    x[1] += s[1] * Wm[i]
-                    sum_sin += sin(s[2]) * Wm[i]
-                    sum_cos += cos(s[2]) * Wm[i]
-                x[2] = atan2(sum_sin, sum_cos)
-                return x
-
-    residual_fn : callable (x, y), optional
-
-        Function that computes the residual (difference) between x and y.
-        You will have to supply this if your state variable cannot support
-        subtraction, such as angles (359-1 degreees is 2, not 358). x and y
-        are state vectors, not scalars.
-
-        .. code-block:: Python
-
-            def residual(a, b):
-                y = a[0] - b[0]
-                y = y % (2 * np.pi)
-                if y > np.pi:
-                    y -= 2 * np.pi
-                return y
-
-    Returns
-    -------
-
-    x : ndarray [dimension]
-        Mean of the sigma points after passing through the transform.
-
-    P : ndarray
-        covariance of the sigma points after passing throgh the transform.
-
-    Examples
-    --------
-
-    See my book Kalman and Bayesian Filters in Python
-    https://github.com/rlabbe/Kalman-and-Bayesian-Filters-in-Python
     """
 
     kmax, n = sigmas.shape
@@ -309,6 +241,7 @@ class UnscentedKalmanFilter:
         ob_idx,
         t: Array,
         theta_obs: Array,
+        hx_batch_enabled: bool = True,
     ) -> tuple[Array, Array, Array]:
         """Performs the update innovation of the extended Kalman filter.
         Parameters
@@ -329,13 +262,17 @@ class UnscentedKalmanFilter:
         if y is None or len(y) == 0:
             x_post = x_pr
             P_post = P_pr
-            return x_post, P_post
+            return x_post, P_post, jnp.array(0.0)
 
         # pass prior sigmas through h(x) to get measurement sigmas
         # the shape of sigmas_h will vary if the shape of z varies, so
         # recreate each time
-        # sigmas_h = jax.vmap(lambda s: _hx(s, t, theta_obs, ob_idx))(sigmas_f)
-        sigmas_h = _hx(sigmas_f, t, theta_obs, ob_idx)
+
+        # If _hx cann't take batch inputs, use vmap:
+        if hx_batch_enabled:
+            sigmas_h = _hx(sigmas_f, t, theta_obs, ob_idx)
+        else:
+            sigmas_h = jax.vmap(lambda s: _hx(s, t, theta_obs, ob_idx))(sigmas_f)
         sigmas_h = jnp.atleast_2d(sigmas_h)
 
         zp, S = unscented_transform(sigmas_h, self.Wm, self.Wc, R)
@@ -391,14 +328,9 @@ class UnscentedKalmanFilter:
         Pxbs = jnp.zeros((n, dim_x, dim_x))  # Cross variance of x_k and f(x_k)
         Ks = jnp.zeros((n, dim_x, dim_x))  # Smoother Kalman gain for each step
         P_k_k1 = jnp.zeros((n - 1, dim_x, dim_x))  # Cross variance of k and k+1
-        # Optional process noise scaling based on observability
-        # alphas = jnp.zeros((n - 1, dim_x))
-
-        # Loop variables
-        # xs, Ps, Qs, dts, 
 
         def body_fun(i, carry):
-        # for k in reversed(range(n - 1)):
+            # for k in reversed(range(n - 1)):
             xs, Ps, Pxbs, Ks, P_k_k1, Q_st = carry
             k = (n - 2) - i
 
@@ -445,64 +377,64 @@ class UnscentedKalmanFilter:
         carry = jax.lax.fori_loop(0, n - 1, body_fun, (xs, Ps, Pxbs, Ks, P_k_k1, Q_st))
         xs, Ps, Pxbs, Ks, P_k_k1, Q_st = carry
 
-
+        # Optional data if E-M steps are to be performed
         data = {
             "P_k_k1": P_k_k1,
             "Q_st": Q_st,
         }
         return xs, Ps, data
 
-    # @partial(jax.jit, static_argnames=["self"])
-    # def bayesian_inverse_variance_weighting(self, x_0, P_0, x_1, P_1):
-    #     L0 = jnp.linalg.cholesky(P_0)
-    #     L1 = jnp.linalg.cholesky(P_1)
-    #     P0_inv = jax.scipy.linalg.cho_solve((L0, True), jnp.eye(P_0.shape[0]))
-    #     P1_inv = jax.scipy.linalg.cho_solve((L1, True), jnp.eye(P_1.shape[0]))
-    #     P_inv_sum = P0_inv + P1_inv
-    #     L = jnp.linalg.cholesky(P_inv_sum)
-    #     P_inv = jax.scipy.linalg.cho_solve((L, True), jnp.eye(P_0.shape[0]))
-    #     x_new = jnp.dot(P_inv, jnp.dot(P0_inv, x_0) + jnp.dot(P1_inv, x_1))
-    #     P_new = jnp.linalg.inv(P_inv_sum)
-    #     return x_new, P_new
+    @partial(jax.jit, static_argnames=["self"])
+    def bayesian_inverse_variance_weighting(self, x_0, P_0, x_1, P_1):
+        L0 = jnp.linalg.cholesky(P_0)
+        L1 = jnp.linalg.cholesky(P_1)
+        P0_inv = jax.scipy.linalg.cho_solve((L0, True), jnp.eye(P_0.shape[0]))
+        P1_inv = jax.scipy.linalg.cho_solve((L1, True), jnp.eye(P_1.shape[0]))
+        P_inv_sum = P0_inv + P1_inv
+        L = jnp.linalg.cholesky(P_inv_sum)
+        P_inv = jax.scipy.linalg.cho_solve((L, True), jnp.eye(P_0.shape[0]))
+        x_new = jnp.dot(P_inv, jnp.dot(P0_inv, x_0) + jnp.dot(P1_inv, x_1))
+        P_new = jnp.linalg.inv(P_inv_sum)
+        return x_new, P_new
 
-    # @partial(jax.jit, static_argnames=["self"])
-    # def em_Q_log_likelihood(self, Qk, Wk) -> Array:
-    #     """
-    #     Computes the EM log-likelihood term:
-    #         log |Q_k|_+ + tr(Q_k^+ @ W_k)
-    #     where Q_k may be singular, and _+ indicates pseudo-determinant.
-    #
-    #     Qk and Wk must be symmetric positive definite matrices.
-    #
-    #     """
-    #
-    #     X = jax.scipy.linalg.solve(Qk, Wk, assume_a="pos")
-    #     trace_term = 0.5 * jnp.trace(X)
-    #
-    #     L = jnp.linalg.cholesky(Qk)
-    #     log_det = jnp.sum(jnp.log(jnp.diag(L)))
-    #     return -1 * (log_det + trace_term)
+    @partial(jax.jit, static_argnames=["self"])
+    def em_Q_log_likelihood(self, Qk, Wk) -> Array:
+        """
+        Computes the EM log-likelihood term:
+            log |Q_k|_+ + tr(Q_k^+ @ W_k)
+        where Q_k may be singular, and _+ indicates pseudo-determinant.
 
-    # def em_P_update(self, P_rts, x0, x_rts):
-    #     """
-    #     EM step to update the covariance matrix P0 based on the RTS smoothed
-    #     estimates and the initial state estimate x0.
-    #
-    #     Parameters
-    #     ----------
-    #     P0 : jnp.array
-    #         Initial covariance matrix.
-    #     P_rts : jnp.array
-    #         Smoothed T=0 matrix from RTS.
-    #     x0 : jnp.array
-    #         Initial state estimate.
-    #     x_rts : jnp.array
-    #         Smoothed T=0 estimates from RTS.
-    #
-    #     Returns
-    #     -------
-    #     P_new : jnp.array
-    #         Updated covariance matrix.
-    #     """
-    #     P_new = P_rts + jnp.outer((x_rts - x0), (x_rts - x0))
-    #     return P_new
+        Qk and Wk must be symmetric positive definite matrices.
+
+        """
+
+        X = jax.scipy.linalg.solve(Qk, Wk, assume_a="pos")
+        trace_term = 0.5 * jnp.trace(X)
+
+        L = jnp.linalg.cholesky(Qk)
+        log_det = jnp.sum(jnp.log(jnp.diag(L)))
+        return -1 * (log_det + trace_term)
+
+    def em_P_update(self, P_rts, x0, x_rts):
+        """
+        EM step to update the covariance matrix P0 based on the RTS smoothed
+        estimates and the initial state estimate x0.
+
+        Parameters
+        ----------
+        P0 : jnp.array
+            Initial covariance matrix.
+        P_rts : jnp.array
+            Smoothed T=0 matrix from RTS.
+        x0 : jnp.array
+            Initial state estimate.
+        x_rts : jnp.array
+            Smoothed T=0 estimates from RTS.
+
+        Returns
+        -------
+        P_new : jnp.array
+            Updated covariance matrix.
+        """
+        P_new = P_rts + jnp.outer((x_rts - x0), (x_rts - x0))
+        return P_new
