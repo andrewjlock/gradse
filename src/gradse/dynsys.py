@@ -37,8 +37,11 @@ class DynamicSystem(ABC):
 
     """
 
-    x_idx: dict[str, int]
-    name: str
+    @property
+    @abstractmethod
+    def x_idx(self) -> dict[str, int]:
+        """Dictionary mapping state names to their indices in the state vector."""
+        ...
 
     @property
     def n_x(self) -> int:
@@ -108,7 +111,6 @@ class DynamicSystem(ABC):
 
         (x,), _ = jax.lax.scan(scan_step, (x,), None, length=n_steps)
         return x
-
 
     def rk_integrate(self, x: Array, dt: float, dt_max: float = 0.5) -> Array:
         """Integrate in time using RK4 integrator.
