@@ -60,7 +60,6 @@ class DynamicSystem(ABC):
         """
         ...
 
-    @partial(jax.jit, static_argnames=["self"])
     def _step(self, dt: float, x: Array) -> Array:
         k1 = self.ode(x)
         k2 = self.ode(x + (dt / 2) * k1)
@@ -69,7 +68,6 @@ class DynamicSystem(ABC):
         x_ = x + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
         return x_
 
-    @partial(jax.jit, static_argnames=["self", "n_steps"])
     def multiple_steps_scan(self, x: Array, dt: float, n_steps: int = 1):
         """Integrate in time using RK4 integrator for multiple steps."""
         dt_step = dt / n_steps

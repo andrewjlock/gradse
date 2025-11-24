@@ -10,3 +10,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+AGENTS.md
+uv.lock
+.python-version
