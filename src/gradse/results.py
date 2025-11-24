@@ -11,6 +11,7 @@ import pickle as pkl
 
 @dataclass(repr=False, frozen=True)
 class FilterStepResult:
+    """Per-step UKF outputs including state, covariance, timing, and likelihood."""
     x_priori: Array
     x_post: Array
     P_priori: Array
@@ -32,6 +33,23 @@ class RTSResult:
         P_rts,
         ecef_ref=jnp.array([0, 0, 0]),
     ):
+        """Bundle RTS smoother outputs and convenience exports.
+
+        Parameters
+        ----------
+        forward_result : ForwardResult
+            Forward pass outputs to align with smoothing results.
+        hx : Callable
+            Measurement function; unused but retained for compatibility.
+        sys : DynamicSystem
+            System containing state indexing.
+        x_rts : Array
+            Smoothed state trajectory.
+        P_rts : Array
+            Smoothed covariance trajectory.
+        ecef_ref : Array, optional
+            Reference ECEF offset added back to positions, by default [0, 0, 0].
+        """
         # Calculate observations
         ecef_ref_b = np.repeat(
             np.array(ecef_ref)[np.newaxis, :], x_rts.shape[0], axis=0
@@ -49,7 +67,13 @@ class RTSResult:
         self.delta_t = np.array(forward_result.delta_t)
 
     def export(self, filepath):
-        """Save the RTS results to a CSV file."""
+        """Save the RTS results to a CSV file.
+
+        Parameters
+        ----------
+        filepath : str
+            Destination path for the CSV file.
+        """
         x_dict = {key: self.x_rts[:, ind] for key, ind in self.x_idx.items()}
         t_dict = {"t": self.t}
         dt_dict = {"delta_t": self.delta_t}
@@ -64,7 +88,13 @@ class RTSResult:
         comb_df.to_csv(filepath, index=False)
 
     def save(self, filepath):
-        """Save the RTS results to a pickle file."""
+        """Save the RTS results to a pickle file.
+
+        Parameters
+        ----------
+        filepath : str
+            Destination path for the pickle file.
+        """
         with open(filepath, "wb") as f:
             pkl.dump(self, f)
 
@@ -72,6 +102,7 @@ class RTSResult:
 @jax.tree_util.register_dataclass
 @dataclass(repr=False, frozen=True)
 class ForwardResult:
+    """Batched forward filter outputs with helpers for slicing and export."""
     x_priori: Array
     x_post: Array
     P_priori: Array
@@ -84,6 +115,7 @@ class ForwardResult:
     i: ArrayLike
 
     def __getitem__(self, index):
+        """Return a new ForwardResult with each field indexed."""
         return ForwardResult(
             **{
                 f.name: object.__getattribute__(self, f.name)[index]
@@ -92,15 +124,25 @@ class ForwardResult:
         )
 
     def __len__(self):
+        """Length based on the leading dimension of stored arrays."""
         first_field = fields(self)[0].name
         return object.__getattribute__(self, first_field).shape[0]
 
     def __iter__(self):
+        """Iterate over per-step ForwardResult views."""
         for i in range(len(self)):
             yield self[i]
 
     def export(self, x_idx, filepath: str):
-        """Save the observation data to a CSV file."""
+        """Save the forward filter results to a CSV file.
+
+        Parameters
+        ----------
+        x_idx : dict[str, int]
+            Mapping of state names to indices.
+        filepath : str
+            Destination path for the CSV file.
+        """
         q_diag = np.array([np.diag(q) for q in self.Q])
         innovation = self.x_post - self.x_priori
 
@@ -125,7 +167,13 @@ class ForwardResult:
         comb_df.to_csv(filepath, index=False)
 
     def save(self, filepath: str):
-        """Save the forward results to a pickle file."""
+        """Save the forward results to a pickle file.
+
+        Parameters
+        ----------
+        filepath : str
+            Destination path for the pickle file.
+        """
         with open(filepath, "wb") as f:
             pkl.dump(self, f)
 
@@ -133,6 +181,28 @@ class ForwardResult:
 def save_results(
     x_rts, P_rts, filter_results, x_idx, result_dir, ref_ecef=jnp.array([0, 0, 0])
 ):
+    """Persist RTS and forward filter trajectories to CSV/NumPy outputs.
+
+    Parameters
+    ----------
+    x_rts : Array
+        RTS smoothed state trajectory.
+    P_rts : Array
+        RTS smoothed covariance trajectory.
+    filter_results : ForwardResult
+        Forward filter outputs to export.
+    x_idx : dict[str, int]
+        State index mapping.
+    result_dir : str
+        Directory to write result files into.
+    ref_ecef : Array, optional
+        Reference ECEF offset added back to positions, by default [0, 0, 0].
+
+    Returns
+    -------
+    None
+        Writes files to `result_dir`.
+    """
     rts_history = np.array(x_rts)
     ref_ecef_b = np.repeat(
         np.array(ref_ecef)[np.newaxis, :], rts_history.shape[0], axis=0
@@ -169,21 +239,21 @@ def save_results(
 
 @jax.jit
 def log_likelihood(x: Array, x_p: Array, P_p: Array):
-    """ Calc log likelihood of n-dimensional Gaussian
+    """Compute log-likelihood of an n-dimensional Gaussian residual.
 
     Parameters
     ----------
     x : Array
-        State vector, length n
+        State vector, length n.
     x_p : Array
-        Predicted state vector, length n
+        Predicted state vector, length n.
     P_p : Array
-        Predicted covariance matrix, shape (n,n)
+        Predicted covariance matrix, shape (n, n).
 
     Returns
     -------
-    ll : Array
-        Log likelihood value
+    Array
+        Scalar log-likelihood value.
     """
 
     res = x - x_p
@@ -193,4 +263,3 @@ def log_likelihood(x: Array, x_p: Array, P_p: Array):
     const = x.shape[0] * jnp.log(2 * jnp.pi)
     ll = -0.5 * (quad_form + log_det + const)
     return ll
-

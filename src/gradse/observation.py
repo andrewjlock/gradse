@@ -12,6 +12,7 @@ from typing import Sequence
 
 
 class Observation(ABC):
+    """Base observation model with time bounds, parameters, and measurement hooks."""
     name: str
     size: int
 
@@ -57,6 +58,13 @@ class Observation(ABC):
 
 class ObParamSlicer:
     def __init__(self, obs: tuple[Observation, ...]):
+        """Build slices to map concatenated observation parameters back to each model.
+
+        Parameters
+        ----------
+        obs : tuple[Observation, ...]
+            Ordered observations that contribute parameter blocks.
+        """
         self.obs: tuple[Observation, ...] = obs
         self.total_theta: int = sum([ob.n_theta for ob in obs])
         self._theta_slices: list[slice] = []
@@ -67,16 +75,30 @@ class ObParamSlicer:
             start = end
 
     def get_slice(self, i):
+        """Return the slice covering the ith observation's parameters.
+
+        Parameters
+        ----------
+        i : int
+            Observation index in the tuple passed to the slicer.
+
+        Returns
+        -------
+        slice
+            Slice pointing to that observation's parameter block.
+        """
         return self._theta_slices[i]
 
     @property
     def slices(self):
+        """All parameter slices in observation order."""
         return self._theta_slices
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class Step:
+    """Single fused time step of padded measurements, covariances, and masks."""
     i: Array
     t: Array
     y: Array  # (n_ob, n_y) Padded combined measurements
@@ -85,6 +107,7 @@ class Step:
 
 
 class ObservationManager:
+    """Helper for batching heterogeneous observations into aligned time steps."""
     obs: Tuple[Observation, ...]
     n_obs: int
     n_steps: int
@@ -101,7 +124,7 @@ class ObservationManager:
     _ob_idx: dict[str, int]
 
     def __init__(self):
-        """I tried to make this simpler, but it ended up being more complicated..."""
+        """Initialise empty observation containers and indices."""
         self._t_ob_start = 0.0
         self._t_ob_end = 0.0
         self.n_obs = 0
@@ -122,6 +145,18 @@ class ObservationManager:
         return [step.t for step in self.steps]
 
     def ob_idx(self, name: str) -> int:
+        """Look up observation index by name.
+
+        Parameters
+        ----------
+        name : str
+            Observation name.
+
+        Returns
+        -------
+        int
+            Index of the observation in the managed tuple.
+        """
         return self._ob_idx[name]
 
     def construct_steps(
@@ -131,6 +166,24 @@ class ObservationManager:
         t_end: float | None = None,
         dt_max: float = 1,
     ):
+        """Assemble aligned measurement steps between t_start/t_end at resolution dt_max.
+
+        Parameters
+        ----------
+        obs : Tuple[Observation, ...]
+            Observations to combine.
+        t_start : float | None, optional
+            Start time override; defaults to earliest observation start.
+        t_end : float | None, optional
+            End time override; defaults to latest observation end.
+        dt_max : float, optional
+            Spacing for the combined timeline, by default 1.
+
+        Returns
+        -------
+        None
+            Populates `steps`, `steps_batched`, and timing metadata.
+        """
         self.n_obs = len(obs)
         self._ob_idx = {ob.name: i for i, ob in enumerate(obs)}
         self.idxs = jnp.arange(self.n_obs, dtype=jnp.int32)
@@ -152,7 +205,7 @@ class ObservationManager:
         else:
             self.t_end = t_end
 
-        self.n_steps = np.ceil((self.t_end - self.t_start) / dt_max).astype(int)
+        self.n_steps = np.ceil((self.t_end - self.t_start) / dt_max).astype(int) + 1
         self.t_all = jnp.linspace(self.t_start, self.t_end, self.n_steps)
 
         steps = []

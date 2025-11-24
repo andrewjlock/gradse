@@ -12,6 +12,7 @@ from gradse.results import log_likelihood
 
 
 class ParamUnpacker:
+    """Convert a flat parameter vector into process noise, state, and observation terms."""
     def __init__(
         self,
         sys: DynamicSystem,
@@ -22,25 +23,36 @@ class ParamUnpacker:
         eps=1e-7,
     ):
         """
-        Unpacks parameter vector theta into process noise covariance Q,
-        initial state x0, and observation biases.
+        Unpack a flat parameter vector into process noise, initial state, and observation blocks.
 
-        Types of parameters include:
-        - Process noise covariance Q: represented in Cholesky decomposed form.
-          Only the lower triangular elements are included in the parameter vector.
-          The diagonal elements are scaled by the average of the initial diagonal
-          covariance values for the corresponding states.
-        - Initial state x0: deviations from prior mean, scaled by state scales.
-        - Observation model parameters
+        Parameters
+        ----------
+        sys : DynamicSystem
+            System definition providing state dimension and indices.
+        x0_pr : Array
+            Prior mean of the state.
+        P0_pr : Array
+            Prior covariance of the state.
+        obs : tuple[Observation, ...]
+            Observation models contributing parameter blocks.
+        q_source_init : dict[str, float]
+            Initial diagonal process noise values keyed by state name.
+        eps : float, optional
+            Small value to avoid division by zero, by default 1e-7.
 
-        Notes:
-        - State and bias parameters a additive adjustments to prior values.
-        - Process noise parameters are multiplicative adjustments to prior values.
-
+        Returns
+        -------
+        None
+            Initializes unpacking helpers and scales.
         """
 
         self.sys = sys
         self.eps = eps
+
+        # Deterministic ordering of state indices for process noise mapping
+        self._state_order = sorted(
+            q_source_init.items(), key=lambda kv: sys.x_idx[kv[0]]
+        )
 
         # State parameters
         self.x0_pr = x0_pr.copy()
@@ -64,9 +76,9 @@ class ParamUnpacker:
         self.x0_slice = slice(self.n_q + self.n_ob, self.n_total)
 
         # Process noise parameters
-        self.q_idx_init = {sys.x_idx[q]: jnp.array(v) for q, v in q_source_init.items()}
+        self.q_idx_init = {sys.x_idx[q]: jnp.array(v) for q, v in self._state_order}
         self.Q_0 = jnp.zeros((self.sys.n_x, self.sys.n_x))
-        for key, value in q_source_init.items():
+        for key, value in self._state_order:
             self.Q_0 = self.Q_0.at[sys.x_idx[key], sys.x_idx[key]].set(value)
         # self.q0 = self.get_q0()
         self.S = jnp.sqrt(jnp.diag(self.Q_0)) * jnp.eye(self.sys.n_x)
@@ -87,6 +99,18 @@ class ParamUnpacker:
         self.theta_scale = jnp.full(self.n_total, 1.0)
 
     def scale_from_jacobian(self, jac):
+        """Scale each parameter block using a representative Jacobian magnitude.
+
+        Parameters
+        ----------
+        jac : Array
+            Sensitivity vector used to set per-parameter scaling.
+
+        Returns
+        -------
+        None
+            Updates internal `theta_scale`.
+        """
         mean = jnp.mean(jnp.abs(jac))
         eps = self.eps
         self.theta_scale = self.theta_scale.at[self.q_slice].set(
@@ -104,6 +128,18 @@ class ParamUnpacker:
         )
 
     def x0(self, theta):
+        """Recover initial state and its log-likelihood from the parameter vector.
+
+        Parameters
+        ----------
+        theta : Array
+            Full parameter vector.
+
+        Returns
+        -------
+        tuple[Array, Array]
+            Initial state estimate and prior log-likelihood.
+        """
         theta = theta[self.x0_slice]
         # scale = self.theta_scale[self.x0_slice]
         x0 = self.x0_pr + theta * self.theta_scale[self.x0_slice]
@@ -111,16 +147,17 @@ class ParamUnpacker:
         return x0, ll_x0
 
     def Qc(self, theta):
-        """
-        Parameterise process noise matrix by 
-        Qc = S @ L @ L.T @ S
-        where S is a diagonal matrix S = diag(sigma_0, sigma_1, ..., sigma_n)
-        and L is a lower triangular matrix where
-        L[i, j] =
-            (1 + theta_k * scale_k) * L0[i, i]  if i == j
-            alpha * tanh(theta_k  * scale_k)    if i > j
-        where theta_k is the k-th parameter in the vector theta corresponding to
-        the (i, j) element of L, and scale_k is the scaling factor for that parameter.
+        """Build a continuous-time process noise matrix from scaled Cholesky factors.
+
+        Parameters
+        ----------
+        theta : Array
+            Full parameter vector containing Q parameters in the leading block.
+
+        Returns
+        -------
+        Array
+            Continuous-time process noise covariance.
         """
 
         theta_d = theta[self.q_diag_slice]
@@ -132,8 +169,9 @@ class ParamUnpacker:
         L = jnp.zeros((self.sys.n_x, self.sys.n_x))
         dc = 0
         odc = 0
-        for i, x_idx in enumerate(self.q_idx_init.keys()):  # colum
-            for x_jdx in list(self.q_idx_init.keys())[: i + 1]: # row
+        ordered_idx = sorted(self.q_idx_init.keys())
+        for i, x_idx in enumerate(ordered_idx):  # colum
+            for x_jdx in ordered_idx[: i + 1]: # row
                 if x_idx == x_jdx:
                     L = L.at[x_idx, x_jdx].set(
                         1 + theta_d[dc] * theta_scale_d[dc]
@@ -148,6 +186,18 @@ class ParamUnpacker:
         return Q_c
 
     def ob_param(self, theta):
+        """Return observation parameters and their prior log-likelihood.
+
+        Parameters
+        ----------
+        theta : Array
+            Full parameter vector.
+
+        Returns
+        -------
+        tuple[Array, Array]
+            Observation parameters and prior log-likelihood.
+        """
         params = self.theta_ob_init + (
             theta[self.ob_slice] * self.theta_scale[self.ob_slice]
         )
@@ -156,6 +206,13 @@ class ParamUnpacker:
 
     @property
     def init_vals(self):
+        """Zero-initialised parameter vector matching all blocks.
+
+        Returns
+        -------
+        Array
+            Parameter vector with zeros in each block.
+        """
         q0 = jnp.full(self.n_q, 0.0)
         x0 = jnp.full(self.n_x, 0.0)
         b0 = jnp.full(self.n_ob, 0.0)
@@ -163,17 +220,48 @@ class ParamUnpacker:
         return theta_0
 
     def save_theta(self, theta, filename):
-        """Save the theta vector to a file"""
+        """Persist the unpacked theta vector to YAML.
+
+        Parameters
+        ----------
+        theta : Array
+            Full parameter vector.
+        filename : str
+            Path to write YAML to.
+        """
         theta_dict = self.to_dict(theta)
         with open(filename, "w") as f:
             yaml.dump(theta_dict, f, default_flow_style=False, sort_keys=False)
 
     def print_theta(self, theta):
+        """Pretty-print the unpacked parameter blocks.
+
+        Parameters
+        ----------
+        theta : Array
+            Full parameter vector.
+
+        Returns
+        -------
+        None
+            Prints to stdout.
+        """
         print_dict = self.to_dict(theta)
         pprint(print_dict, expand_all=True)
 
     def to_dict(self, theta):
-        """Convert the theta vector to a dictionary format"""
+        """Convert the parameter vector into human-friendly dictionaries.
+
+        Parameters
+        ----------
+        theta : Array
+            Full parameter vector.
+
+        Returns
+        -------
+        dict
+            Nested mapping of process noise diagonal, state, and bias terms.
+        """
         result_dict = {"Q_diag": {}, "x0": {}, "bias": {}}
         Q_diag = jnp.diag(self.Qc(theta))
         x0, _ = self.x0(theta)

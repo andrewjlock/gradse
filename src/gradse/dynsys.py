@@ -61,6 +61,20 @@ class DynamicSystem(ABC):
         ...
 
     def _step(self, dt: float, x: Array) -> Array:
+        """Advance the state by dt using a single RK4 step.
+
+        Parameters
+        ----------
+        dt : float
+            Integration step size.
+        x : Array
+            Current state vector.
+
+        Returns
+        -------
+        Array
+            State propagated by one RK4 step.
+        """
         k1 = self.ode(x)
         k2 = self.ode(x + (dt / 2) * k1)
         k3 = self.ode(x + (dt / 2) * k2)
@@ -69,7 +83,22 @@ class DynamicSystem(ABC):
         return x_
 
     def multiple_steps_scan(self, x: Array, dt: float, n_steps: int = 1):
-        """Integrate in time using RK4 integrator for multiple steps."""
+        """Integrate over dt using n_steps RK4 substeps.
+
+        Parameters
+        ----------
+        x : Array
+            Initial state vector.
+        dt : float
+            Total integration interval.
+        n_steps : int, optional
+            Number of substeps to split dt into, by default 1.
+
+        Returns
+        -------
+        Array
+            State after n_steps RK4 substeps.
+        """
         dt_step = dt / n_steps
 
         def scan_step(carry, _):
@@ -89,6 +118,19 @@ class DynamicSystem(ABC):
         Note: Currently only supports a single step. Extending for dynamic number of steps
         is a work in progress to ensure efficienet Jax JIT and reverse AD compatibility.
 
+        Parameters
+        ----------
+        x : Array
+            Initial state vector.
+        dt : float
+            Integration interval.
+        dt_max : float, optional
+            Maximum allowed substep, by default 0.5 (unused currently).
+
+        Returns
+        -------
+        Array
+            State after integrating over dt.
         """
         # One step
         x = self._step(dt, x)
@@ -96,6 +138,18 @@ class DynamicSystem(ABC):
 
     @partial(jax.jit, static_argnames=["self"])
     def jac(self, x: Array) -> Array:
+        """Jacobian of the system ODE with respect to x.
+
+        Parameters
+        ----------
+        x : Array
+            State at which to evaluate the Jacobian.
+
+        Returns
+        -------
+        Array
+            Jacobian matrix of shape (n_x, n_x).
+        """
         x = jnp.array(x)
         jac_fn = jax.jacobian(self.ode, argnums=0)
         jac = jac_fn(x)
@@ -103,6 +157,20 @@ class DynamicSystem(ABC):
 
     @partial(jax.jit, static_argnames=["self"])
     def transition_Ab(self, x: Array, dt: float) -> tuple[Array, Array]:
+        """Linearise one integration step into A and b for x1 = A x + b.
+
+        Parameters
+        ----------
+        x : Array
+            State around which to linearise.
+        dt : float
+            Integration interval.
+
+        Returns
+        -------
+        tuple[Array, Array]
+            Transition matrix A and offset b.
+        """
         A = jax.jacobian(self.rk_integrate, argnums=0)(x, dt)
         x1 = self.rk_integrate(x, dt)
         b = x1 - A @ x

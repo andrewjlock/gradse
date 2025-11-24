@@ -12,28 +12,23 @@ from jax import vmap
 def process_white_noise(
     A: Array, Q_c: Array, dt: float, density: float
 ) -> Array:
-    """
-    Create a disrete-time process white noise matrix based off a linear system
-    matrix and continuous noise matrix.
-
-    The discret noise matrix is calculated as
-    Q_d = int_0^dt F @ Q_c @ F.T dt
+    """Integrate continuous-time noise Q_c to discrete Q_d for linear system A.
 
     Parameters
     ----------
-    A : jnp.array
-        Linear dynamical system matrix (can be an estimate)
-    Q_c : jnp.array
-        Continuous-time process noise matrix (normally sparse)
-    dt_ : float
-        Discrete time interval
+    A : Array
+        Continuous-time system matrix.
+    Q_c : Array
+        Continuous-time process noise covariance.
+    dt : float
+        Discrete time interval to integrate over.
     density : float
-        density (magnitude) of the noise
+        Scaling factor for noise magnitude.
 
     Returns
     -------
-    Q_d : jnp.array
-        Discrete-time process noise matrix
+    Array
+        Discrete-time process noise covariance.
     """
 
     def expr(t):

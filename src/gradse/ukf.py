@@ -9,6 +9,7 @@ from gradse.results import log_likelihood
 
 
 class MerweScaledSigmaPoints:
+    """Sigma point generator using the Merwe scaled formulation."""
     def __init__(
         self, n: int, alpha: float, beta: float, kappa: float, method: str = "cholesky"
     ) -> None:
@@ -25,6 +26,20 @@ class MerweScaledSigmaPoints:
 
     @partial(jax.jit, static_argnames=["self"])
     def sigma_points(self, x: Array, P: Array):
+        """Generate sigma points around mean x with covariance P.
+
+        Parameters
+        ----------
+        x : Array
+            Mean state vector.
+        P : Array
+            State covariance matrix (or scalar for diagonal).
+
+        Returns
+        -------
+        Array
+            Sigma point matrix of shape (2n+1, n).
+        """
         if self.n != jnp.size(x):
             raise ValueError(
                 "expected size(x) {}, but size is {}".format(self.n, jnp.size(x))
@@ -68,7 +83,7 @@ class MerweScaledSigmaPoints:
         return sigmas
 
     def _compute_weights(self) -> None:
-        """Computes the weights for the scaled unscented Kalman filter."""
+        """Compute weights for the scaled unscented transform."""
 
         n = self.n
         lambda_ = self.alpha**2 * (n + self.kappa) - n
@@ -91,11 +106,27 @@ def unscented_transform(
     mean_fn: Callable[[Array, Array], Array] | None = None,
     residual_fn: Callable[[Array, Array], Array] | None = None,
 ) -> tuple[Array, Array]:
-    """
-    Computes unscented transform of a set of sigma points and weights.
-    returns the mean and covariance in a tuple.
+    """Project sigma points through weighted mean/covariance computation.
 
-    This works in conjunction with the UnscentedKalmanFilter class.
+    Parameters
+    ----------
+    sigmas : Array
+        Sigma points shaped (k, n).
+    Wm : Array
+        Weights for the mean.
+    Wc : Array
+        Weights for the covariance.
+    noise_cov : Array
+        Additive covariance to include in the result.
+    mean_fn : Callable[[Array, Array], Array] | None, optional
+        Custom mean function for non-Euclidean spaces.
+    residual_fn : Callable[[Array, Array], Array] | None, optional
+        Residual function to subtract two sigma points.
+
+    Returns
+    -------
+    tuple[Array, Array]
+        Mean vector and covariance matrix.
     """
 
     kmax, n = sigmas.shape
@@ -123,7 +154,23 @@ def unscented_transform(
 
 
 class UnscentedKalmanFilter:
-    """Implements an Unscented Kalman filter (UKF)."""
+    """Implements an Unscented Kalman filter (UKF) for a JAX dynamic system.
+
+    Parameters
+    ----------
+    dsys : DynamicSystem
+        System model providing dynamics and state size.
+    dt_int_max : float
+        Maximum integration substep.
+    alpha : float, optional
+        Spread of sigma points, by default 0.1.
+    beta : float, optional
+        Distribution parameter for Gaussian priors, by default 2.0.
+    kappa : float, optional
+        Secondary scaling parameter, by default 0.
+    msqrt_method : str, optional
+        Matrix square-root method ("cholesky" or "eigen"), by default "cholesky".
+    """
 
     def __init__(
         self,
@@ -163,6 +210,20 @@ class UnscentedKalmanFilter:
         between calls to predict (to update for multiple simultaneous
         measurements), so the sigmas correctly reflect the updated state
         x, P.
+
+        Parameters
+        ----------
+        dt : float
+            Time increment for state propagation.
+        x : Array
+            Current mean state.
+        P : Array
+            Current state covariance.
+
+        Returns
+        -------
+        Array
+            Propagated sigma points for the process model.
         """
 
         # calculate sigma points for given mean and covariance
@@ -174,8 +235,23 @@ class UnscentedKalmanFilter:
     def cross_variance(
         self, x: Array, z: Array, sigmas_f: Array, sigmas_h: Array
     ) -> Array:
-        """
-        Compute cross variance of the state `x` and measurement `z`.
+        """Compute cross covariance between state sigma points and measurement sigma points.
+
+        Parameters
+        ----------
+        x : Array
+            Mean state vector.
+        z : Array
+            Mean measurement vector.
+        sigmas_f : Array
+            Process sigma points.
+        sigmas_h : Array
+            Measurement sigma points.
+
+        Returns
+        -------
+        Array
+            Cross covariance matrix Pxz.
         """
         residual_x_vmap = jax.jit(jax.vmap(self.residual_x, in_axes=(0, None)))
         residual_y_vmap = jax.jit(jax.vmap(self.residual_y, in_axes=(0, None)))
@@ -199,24 +275,23 @@ class UnscentedKalmanFilter:
         P: Array,
         Q: Array,
     ) -> tuple[Array, Array]:
-        """
-        Predict next state (prior) using the Kalman filter state propagation
-        equations.
-
-        Note: Not yet configured with inputs
+        """Predict state mean and covariance forward by dt.
 
         Parameters
         ----------
         dt : float
-            Time step of the tracking iteration
-        x : jnp.array
-            state vector
-        P : jnp.array
-            state covariance matrix
-        Q : jnp.array
-            Process noise matrix
-        u : jnp.array (optional)
-            input vector
+            Time step of the tracking iteration.
+        x : Array
+            Prior mean state vector.
+        P : Array
+            Prior state covariance matrix.
+        Q : Array
+            Process noise matrix for this step.
+
+        Returns
+        -------
+        tuple[Array, Array]
+            Predicted mean state and covariance.
         """
 
         sigmas_f = self.compute_process_sigmas(dt, x, P)
@@ -243,18 +318,33 @@ class UnscentedKalmanFilter:
         theta_obs: Array,
         hx_batch_enabled: bool = True,
     ) -> tuple[Array, Array, Array]:
-        """Performs the update innovation of the extended Kalman filter.
+        """Perform the measurement update step.
+
         Parameters
         ----------
-        y : jnp.array
-            measurement for this step.
-            If `None`, posterior is not computed
-        R : jnp.array
-            measurement uncertainty matrix
-        _hx : Callable
-            obseravble function
-        u : jnp.array, optional
-            Input vector
+        x_pr : Array
+            Predicted mean state.
+        P_pr : Array
+            Predicted state covariance.
+        y : Array
+            Measurement vector (masked entries allowed).
+        R : Array
+            Measurement covariance.
+        _hx : Callable[[Array, Array, Array, int], Array]
+            Measurement function accepting batch of sigma points.
+        ob_idx : int | Array
+            Observation index for dispatch.
+        t : Array
+            Timestamp for the measurement.
+        theta_obs : Array
+            Observation parameter vector.
+        hx_batch_enabled : bool, optional
+            Whether `_hx` supports batched sigma points, by default True.
+
+        Returns
+        -------
+        tuple[Array, Array, Array]
+            Posterior mean, posterior covariance, and log-likelihood.
         """
 
         sigmas_f = self.sigma_points_fn.sigma_points(x_pr, P_pr)
@@ -300,11 +390,36 @@ class UnscentedKalmanFilter:
 
     @partial(jax.jit, static_argnames=["self"])
     def rts_smoother(self, xs: Array, Ps: Array, Qs: Array, dts: Array):
+        """Run Rauch–Tung–Striebel smoothing over a forward pass.
+
+        Parameters
+        ----------
+        xs : Array
+            Posterior mean states from forward filter (T, n).
+        Ps : Array
+            Posterior covariances from forward filter (T, n, n).
+        Qs : Array
+            Process noise matrices per step (T, n, n).
+        dts : Array
+            Time deltas between steps (T,).
+
+        Returns
+        -------
+        tuple
+            Smoothed states, smoothed covariances, and auxiliary EM data.
+
+        Notes
+        -----
+        Only posterior states and covariances from the forward filter are needed - so they 
+        should be the same shape as Qs and dts (i.e. the number of filter updates).
+        The indexing of dts and Qs[k] and dts[k] corresponds to the step from k-1 to k, which
+        differs from standard literature conventions.
+        """
         n = xs.shape[0]
         if not all(
             n_i == n for n_i in [Ps.shape[0], Qs.shape[0], xs.shape[0], len(dts)]
         ):
-            print("ERROR: RTS smoother inputs are not same length")
+            raise ValueError("Mismatched lengths of inputs to RTS smoother.")
         dim_x = self.dsys.n_x
 
         # Instantiate objects and Jax overhead
@@ -313,8 +428,7 @@ class UnscentedKalmanFilter:
             2 * self.dsys.n_x, alpha=0.9, beta=2.0, kappa=0, method="eigen"
         )  # Dual sigma points for smoother
         sigma_f_batch = jax.jit(jax.vmap(self._fx, in_axes=(0, None)))
-        res_vmap_1 = jax.jit(jax.vmap(self.residual_x, in_axes=(0, None)))
-        # res_vmap_2 = jax.jit(jax.vmap(self.residual_x, in_axes=(0, 0)))
+        res_vmap = jax.jit(jax.vmap(self.residual_x, in_axes=(0, None)))
         weighted_outer_vmap = jax.jit(
             jax.vmap(
                 lambda w, x, y: w * jnp.outer(x, y),
@@ -333,17 +447,18 @@ class UnscentedKalmanFilter:
             # for k in reversed(range(n - 1)):
             xs, Ps, Pxbs, Ks, P_k_k1, Q_st = carry
             k = (n - 2) - i
+            step_idx = k + 1
 
             # create sigma points from state estimate, pass through state func
             sigmas = self.sigma_points_fn.sigma_points(xs[k], Ps[k])
-            sigmas_f = self.compute_process_sigmas(dts[k + 1], xs[k], Ps[k])
-            xb, Pb = UT(sigmas_f, self.Wm, self.Wc, Qs[k + 1])
+            sigmas_f = self.compute_process_sigmas(dts[step_idx], xs[k], Ps[k])
+            xb, Pb = UT(sigmas_f, self.Wm, self.Wc, Qs[step_idx])
 
             # Optionally calculate a weighting factor for Q EM step
             # alphas = alphas.at[k].set(jnp.diag(Pb - Ps[k + 1]) / jnp.diag(Pb))
 
-            y_res = res_vmap_1(sigmas_f, xb)
-            z_res = res_vmap_1(sigmas, xs[k])
+            y_res = res_vmap(sigmas_f, xb)
+            z_res = res_vmap(sigmas, xs[k])
             Pxbs = Pxbs.at[k].set(
                 jnp.sum(weighted_outer_vmap(self.Wc, z_res, y_res), axis=0)
             )
@@ -364,7 +479,7 @@ class UnscentedKalmanFilter:
             sigma_points_dual = sigma_points_dual_fn.sigma_points(x_joint, P_joint)
             sigma_points_k = sigma_points_dual[:, : self.dsys.n_x]
             sigma_points_k1 = sigma_points_dual[:, self.dsys.n_x :]
-            sigma_points_k_f = sigma_f_batch(sigma_points_k, dts[k + 1])
+            sigma_points_k_f = sigma_f_batch(sigma_points_k, dts[step_idx])
             residuals = sigma_points_k1 - sigma_points_k_f
             Q_st = Q_st.at[k].set(
                 jnp.sum(
@@ -386,6 +501,24 @@ class UnscentedKalmanFilter:
 
     @partial(jax.jit, static_argnames=["self"])
     def bayesian_inverse_variance_weighting(self, x_0, P_0, x_1, P_1):
+        """Fuse two Gaussian estimates via inverse-variance weighting.
+
+        Parameters
+        ----------
+        x_0 : Array
+            Mean of first estimate.
+        P_0 : Array
+            Covariance of first estimate.
+        x_1 : Array
+            Mean of second estimate.
+        P_1 : Array
+            Covariance of second estimate.
+
+        Returns
+        -------
+        tuple[Array, Array]
+            Fused mean and covariance.
+        """
         L0 = jnp.linalg.cholesky(P_0)
         L1 = jnp.linalg.cholesky(P_1)
         P0_inv = jax.scipy.linalg.cho_solve((L0, True), jnp.eye(P_0.shape[0]))
@@ -406,6 +539,17 @@ class UnscentedKalmanFilter:
 
         Qk and Wk must be symmetric positive definite matrices.
 
+        Parameters
+        ----------
+        Qk : Array
+            Candidate process noise matrix.
+        Wk : Array
+            Weighted residual covariance.
+
+        Returns
+        -------
+        Array
+            Scalar log-likelihood contribution.
         """
 
         X = jax.scipy.linalg.solve(Qk, Wk, assume_a="pos")
