@@ -62,7 +62,7 @@ obs = MyObservation(...)
 om = ObservationManager()
 om.construct_steps(obs, t_end=0.1, dt_max=0.1)
 
-q_source = {"state_1": 0.1,
+q_source_init = {"state_1": 0.1,
             ...}
 
 P0 = jnp.eye(dsys.n_x) * ...
