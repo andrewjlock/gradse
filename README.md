@@ -56,13 +56,18 @@ from gradse.dynamic_systems import DynamicSystem
 from gradse.process_noise import process_white_noise
 
 
-ukf = UKF(system=my_system)
+dsys = MySystem(...)
+ukf = UKF(dsys=dsys)
 obs = MyObservation(...)
 om = ObservationManager()
 om.construct_steps(obs, t_end=0.1, dt_max=0.1)
-params = ParamUnpacker(...)
 
-P0 = jnp.eye(...)
+q_source = {"state_1": 0.1,
+            ...}
+
+P0 = jnp.eye(dsys.n_x) * ...
+x00 = jnp.array([...])
+pu = ParamUnpacker(sys, x00, P0, obs, q_source)
 
 def run_forward(theta):
 
@@ -85,7 +90,7 @@ def run_forward(theta):
 
     r_res = ForwardResult(x_pr, x_post, P_pr, P_post, t, delta_t, F,  Q, ll, step.i)
 
-    return ll
+    return ll + ll_x0 + ll_ob_param
 
 theta = ...  # parameter vector
 ll_grad = jax.grad(run_forward, argnums=0)(theta)
