@@ -25,42 +25,77 @@ pip install -eat.
 ```
 
 ## Quick start
-Define your system/observation models, then run the UKF:
+
+Inherit from `DynamicSystem` to define your model:
 
 ```python
 import jax.numpy as jnp
-from gradse.ukf import UnscentedKalmanFilter
-from gradse.dynsys import DynamicSystem
+from gradse.dynamic_systems import DynamicSystem
 
-class ConstantVelocity(DynamicSystem):
-    x_idx = {"x": 0, "v": 1}
-    name = "cv"
-    def ode(self, x):  # dx/dt = v, dv/dt = 0
-        return jnp.array([x[1], 0.0])
-
-sys = ConstantVelocity()
-ukf = UnscentedKalmanFilter(sys, dt_int_max=0.1)
-
-Q = jnp.eye(sys.n_x) * 1e-3
-x0 = jnp.array([0.0, 1.0])
-P0 = jnp.eye(sys.n_x) * 0.1
-
-# Predict one second forward
-x_pr, P_pr = ukf.predict(dt=1.0, x=x0, P=P0, Q=Q)
-
-# Simple position observation: hx(sigmas, t, theta, ob_idx) -> measurements
-def hx(sigmas, t, theta_obs, ob_idx):
-    return sigmas[:, 0:1]
-
-y = jnp.array([1.05])
-R = jnp.eye(1) * 0.05
-x_post, P_post, ll = ukf.update(x_pr, P_pr, y, R, hx, ob_idx=0,
-                                t=jnp.array([0.0]), theta_obs=jnp.array([]))
+class MySystem(DynamicSystem):
+    ...
 ```
 
-All computations are JAX-compatible, so you can wrap the log-likelihood in `jax.grad`/`jax.value_and_grad` for MLE-style tuning of noise or observation parameters.
+and inherit from `Observation` to define your measurement model:
 
-## Development
-- Format: `ruff format src`
-- Type check: `basedpyright src`
-- Smoke import: `python - <<'PY'\nfrom gradse.ukf import UnscentedKalmanFilter\nprint(\"gradse import ok\")\nPY`
+```python
+from gradse.observations import Observation
+class MyObservation(Observation):
+    ...
+```
+
+Then create a UKF instance and run filtering. A very minimal example may look like
+
+```python
+import jax
+from gradse.ukf import UKF
+from gradse.params import ParamUnpacker
+from gradse.observations import ObservationManager
+from gradse.results import ForwardResult
+from gradse.dynamic_systems import DynamicSystem
+from gradse.process_noise import process_white_noise
+
+
+ukf = UKF(system=my_system)
+obs = MyObservation(...)
+om = ObservationManager()
+om.construct_steps(obs, t_end=0.1, dt_max=0.1)
+params = ParamUnpacker(...)
+
+P0 = jnp.eye(...)
+
+def run_forward(theta):
+
+    x0, ll_x0 = pu.x0(theta)
+    ob_param, ll_ob_param = pu.ob_param(theta)
+
+    t = om.t_start
+
+    delta_t = 0.1
+    step = om.steps[0]
+    delta_t = step.t - t
+
+
+
+    J = sys.jac(x0)
+    F = jax.scipy.linalg.expm(J * delta_t)
+    Q = process_white_noise(J, Q_c, delta_t, 1)
+    x_pr, P_pr = ukf.predict(delta_t, x0, P0, Q)
+    x_post, P_post, ll = ukf.update(x_pr, P_pr, step.y, step.R, om.hx, idx, _t, ob_param)
+
+    r_res = ForwardResult(x_pr, x_post, P_pr, P_post, t, delta_t, F,  Q, ll, step.i)
+
+    return ll
+
+theta = ...  # parameter vector
+ll_grad = jax.grad(run_forward, argnums=0)(theta)
+
+x_rts, P_rts, rts_data = ukf.rts_smoother(
+    r_res.x_post,
+    r_res.P_post,
+    r_res.Q,
+    r_res.delta_t,
+)
+
+```
+
