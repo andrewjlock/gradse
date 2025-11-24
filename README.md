@@ -24,3 +24,11 @@ Without `uv`:
 pip install -e .
 ```
 
+## Quick start
+
+- Implement a `DynamicSystem` subclass in `gradse.dynsys` with `x_idx` and `ode`.
+- Implement one or more `Observation` subclasses in `gradse.observation` (define `t_start`, `t_end`, `n_theta`, `theta_init`, `theta_cov`, `y`, `hx`, `dhx`, `R`, `in_range`).
+- Align measurements with `ObservationManager().construct_steps(obs, t_end, dt_max)` and use `om.hx`/`om.dhx` in filters.
+- Instantiate `UnscentedKalmanFilter(dsys, dt_int_max=...)` and set priors/parameter handling with `ParamUnpacker(sys, x0_prior, P0_prior, obs, q_source_init)`.
+- Per step: build `Q = process_white_noise(sys.jac(x), pu.Qc(theta), dt, density)`, call `predict`, then `update` (set `hx_batch_enabled=False` if passing a single-state `hx`), and store into a `ForwardResult`.
+- Optional: smooth with `ukf.rts_smoother(forward.x_post, forward.P_post, forward.Q, forward.delta_t)` and differentiate log-likelihoods via `jax.grad`/`jax.value_and_grad` for parameter tuning.
