@@ -1,5 +1,6 @@
 """Observation"""
 
+from __future__ import annotations
 from typing import Tuple, Callable
 import jax
 import jax.numpy as jnp
@@ -13,8 +14,15 @@ from typing import Sequence
 
 class Observation(ABC):
     """Base observation model with time bounds, parameters, and measurement hooks."""
+
     name: str
     size: int
+    param_groups: Tuple[ObParam, ...]
+
+    def __init__(self, name: str, size: int, param_groups: Sequence[ObParam] = ()):
+        self.name = name
+        self.size = size
+        self.param_groups = tuple(param_groups)
 
     @property
     @abstractmethod
@@ -24,17 +32,13 @@ class Observation(ABC):
     @abstractmethod
     def t_end(self) -> float: ...
 
-    @property
-    @abstractmethod
-    def n_theta(self) -> int: ...
+    # @property
+    # @abstractmethod
+    # def theta_init(self) -> Array: ...
 
-    @property
-    @abstractmethod
-    def theta_init(self) -> Array: ...
-
-    @property
-    @abstractmethod
-    def theta_cov(self) -> Array: ...
+    # @property
+    # @abstractmethod
+    # def theta_cov(self) -> Array: ...
 
     @abstractmethod
     def in_range(self, t_unix: float) -> bool: ...
@@ -56,7 +60,70 @@ class Observation(ABC):
     def R(self, t: float) -> Array: ...
 
 
-class ObParamSlicer:
+class ObParam:
+    name: str
+    size: int
+    init_value: Array
+    prior_cov: Array
+    _sl: slice | None
+
+    def __init__(
+        self,
+        name: str,
+        size: int | None = None,
+        init_value: Array | None = None,
+        prior_cov: Array | None = None,
+    ):
+        """Observation parameter group.
+
+        Parameters
+        ----------
+        name : str
+            Unique name for this parameter group.
+        init_value : Array | None, optional
+            Initial parameter values, by default zeros.
+        prior_cov : Array | None, optional
+            Prior covariance matrix, by default identity.
+        """
+        self.name = name
+        if size is None and init_value is None:
+            raise ValueError("Either size or init_value must be provided.")
+        if size is None and init_value is not None:
+            self.size = init_value.shape[0]
+        elif size is not None:
+            self.size = size
+        if init_value is None:
+            self.init_value = jnp.zeros(size)
+        else:
+            self.init_value = init_value
+        if prior_cov is None:
+            self.prior_cov = jnp.eye(self.size)
+        else:
+            if prior_cov.shape != (self.size, self.size):
+                raise ValueError(
+                    f"prior_cov shape {prior_cov.shape} does not match size {self.size}."
+                )
+            self.prior_cov = prior_cov
+        self._sl = None
+
+    @property
+    def sl(self) -> slice:
+        """Slice of concatenated parameter vector corresponding to this group."""
+        if self._sl is None:
+            raise ValueError("Slice has not been assigned yet.")
+        return self._sl
+
+    @sl.setter
+    def sl(self, value: slice):
+        self._sl = value
+
+
+class ObParamCollection:
+    _pgs: tuple[ObParam, ...]
+    _total_theta: int
+    _theta_init: Array
+    _theta_cov: Array
+
     def __init__(self, obs: tuple[Observation, ...]):
         """Build slices to map concatenated observation parameters back to each model.
 
@@ -65,40 +132,55 @@ class ObParamSlicer:
         obs : tuple[Observation, ...]
             Ordered observations that contribute parameter blocks.
         """
-        self.obs: tuple[Observation, ...] = obs
-        self.total_theta: int = sum([ob.n_theta for ob in obs])
-        self._theta_slices: list[slice] = []
+        param_groups_all = [b for ob in obs for b in ob.param_groups]
+        if len(param_groups_all) != len(set(pg.name for pg in param_groups_all)):
+            raise ValueError("Observation parameter names must be unique.")
+        # Narrow to unique parameter groups
+        param_groups = []
+        seen = set()
+        for pg in param_groups_all:
+            if pg.name not in seen:
+                param_groups.append(pg)
+                seen.add(pg.name)
+        self._pgs = tuple(param_groups)
+
+        self._total_theta = sum([pg.size for pg in self._pgs])
+        self._theta_init = jnp.concatenate([pg.init_value for pg in self._pgs])
+        self._theta_cov = jax.scipy.linalg.block_diag(*[pg.prior_cov for pg in self._pgs])
+
+        # Add slice of parameter vector to each group
         start = 0
-        for ob in obs:
-            end = start + ob.n_theta
-            self._theta_slices.append(slice(start, end))
+        for pg in self._pgs:
+            end = start + pg.size
+            pg.sl = slice(start, end)
             start = end
 
-    def get_slice(self, i):
-        """Return the slice covering the ith observation's parameters.
-
-        Parameters
-        ----------
-        i : int
-            Observation index in the tuple passed to the slicer.
-
-        Returns
-        -------
-        slice
-            Slice pointing to that observation's parameter block.
-        """
-        return self._theta_slices[i]
+    @property
+    def param_groups(self):
+        """All unique observation parameter groups."""
+        return self._pgs
 
     @property
-    def slices(self):
-        """All parameter slices in observation order."""
-        return self._theta_slices
+    def theta_init(self):
+        """Initial parameter vector for all observation parameters."""
+        return self._theta_init
+
+    @property
+    def total_theta(self):
+        """Total number of observation parameters."""
+        return self._total_theta
+
+    @property
+    def theta_cov(self):
+        """Prior covariance matrix for all observation parameters."""
+        return self._theta_cov
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class Step:
     """Single fused time step of padded measurements, covariances, and masks."""
+
     i: Array
     t: Array
     y: Array  # (n_ob, n_y) Padded combined measurements
@@ -108,6 +190,7 @@ class Step:
 
 class ObservationManager:
     """Helper for batching heterogeneous observations into aligned time steps."""
+
     obs: Tuple[Observation, ...]
     n_obs: int
     n_steps: int
@@ -235,12 +318,12 @@ class ObservationManager:
 
         # We need all hx functions to take the same shape of parameters, so we wrap each hx
         # to only use its own slice of the full parameter vector.
-        param_slicer = ObParamSlicer(obs)
 
-        def make_hx(f, s):
-            return lambda x, t, params: f(x, t, params[s])
-
-        hx_list = [make_hx(ob.hx, sl) for ob, sl in zip(obs, param_slicer.slices)]
+        # def make_hx(f):
+        #     return lambda x, t, params: f(x, t, params)
+        #
+        # hx_list = [make_hx(ob.hx) for ob in zip(obs)]
+        hx_list = [ob.hx for ob in obs]
 
         @jax.jit
         def hx_dispatcher(x: Array, t: Array, params: Array, idx: Array) -> Array:

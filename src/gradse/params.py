@@ -1,12 +1,10 @@
-import jax
 import jax.numpy as jnp
-from jax.scipy.linalg import block_diag
 from jax import Array
 import numpy as np
 import yaml
 from rich.pretty import pprint
 
-from gradse.observation import Observation
+from gradse.observation import Observation, ObParamCollection
 from gradse.dynsys import DynamicSystem
 from gradse.results import log_likelihood
 
@@ -48,6 +46,7 @@ class ParamUnpacker:
 
         self.sys = sys
         self.eps = eps
+        opc = ObParamCollection(obs)
 
         # Deterministic ordering of state indices for process noise mapping
         self._state_order = sorted(
@@ -64,7 +63,7 @@ class ParamUnpacker:
         self.n_q = np.sum(range(len(q_source_init) + 1))
         self.n_q_diag = len(q_source_init)
         self.n_q_offdiag = self.n_q - self.n_q_diag
-        self.n_ob = sum([ob.n_theta for ob in obs])
+        self.n_ob = opc.total_theta
         self.n_x = sys.n_x
         # self.n_P = sys.n_x  # Only parameterise diagonal elements for now
         self.n_total = self.n_q + self.n_x + self.n_ob
@@ -86,15 +85,9 @@ class ParamUnpacker:
 
 
         # Observation parameters
-        self.obs_param_dict = {}
-        i = 0
-        for ob in obs:
-            for j in range(ob.n_theta):
-                self.obs_param_dict[f"{ob.name}_{j}"] = i
-                i += 1
-
-        self.theta_ob_init = jnp.concatenate([ob.theta_init for ob in obs])
-        self.theta_ob_cov = block_diag(*[ob.theta_cov for ob in obs])
+        self.theta_ob_pg = opc.param_groups
+        self.theta_ob_init = opc.theta_init
+        self.theta_ob_cov = opc.theta_cov
 
         self.theta_scale = jnp.full(self.n_total, 1.0)
 
@@ -271,6 +264,7 @@ class ParamUnpacker:
             result_dict["Q_diag"][f"q_{x_idx}"] = float(q)
         for key, value in self.sys.x_idx.items():
             result_dict["x0"][f"{key}_0"] = float(x0[value])
-        for key, idx in self.obs_param_dict.items():
-            result_dict["bias"][key] = float(ob_param[idx])
+        for pg in self.theta_ob_pg:
+            for i in range(pg.size):
+                result_dict["bias"][f"{pg.name}_{i}"] = float(ob_param[pg.sl][i])
         return result_dict
