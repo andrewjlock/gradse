@@ -1,7 +1,5 @@
-"""Observation"""
-
 from __future__ import annotations
-from typing import Tuple, Callable
+from typing import Callable
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -11,15 +9,17 @@ from abc import ABC, abstractmethod
 from functools import partial
 from typing import Sequence
 
+from gradse.param import Param
+
 
 class Observation(ABC):
     """Base observation model with time bounds, parameters, and measurement hooks."""
 
     name: str
     size: int
-    param_groups: Tuple[ObParam, ...]
+    param_groups: tuple[Param, ...]
 
-    def __init__(self, name: str, size: int, param_groups: Sequence[ObParam] = ()):
+    def __init__(self, name: str, size: int, param_groups: Sequence[Param] = ()):
         self.name = name
         self.size = size
         self.param_groups = tuple(param_groups)
@@ -31,14 +31,6 @@ class Observation(ABC):
     @property
     @abstractmethod
     def t_end(self) -> float: ...
-
-    # @property
-    # @abstractmethod
-    # def theta_init(self) -> Array: ...
-
-    # @property
-    # @abstractmethod
-    # def theta_cov(self) -> Array: ...
 
     @abstractmethod
     def in_range(self, t_unix: float) -> bool: ...
@@ -60,122 +52,6 @@ class Observation(ABC):
     def R(self, t: float) -> Array: ...
 
 
-class ObParam:
-    name: str
-    size: int
-    init_value: Array
-    prior_cov: Array
-    _sl: slice | None
-
-    def __init__(
-        self,
-        name: str,
-        size: int | None = None,
-        init_value: Array | None = None,
-        prior_cov: Array | None = None,
-    ):
-        """Observation parameter group.
-
-        Parameters
-        ----------
-        name : str
-            Unique name for this parameter group.
-        init_value : Array | None, optional
-            Initial parameter values, by default zeros.
-        prior_cov : Array | None, optional
-            Prior covariance matrix, by default identity.
-        """
-        self.name = name
-        if size is None and init_value is None:
-            raise ValueError("Either size or init_value must be provided.")
-        if size is None and init_value is not None:
-            self.size = init_value.shape[0]
-        elif size is not None:
-            self.size = size
-        if init_value is None:
-            self.init_value = jnp.zeros(size)
-        else:
-            self.init_value = init_value
-        if prior_cov is None:
-            self.prior_cov = jnp.eye(self.size)
-        else:
-            if prior_cov.shape != (self.size, self.size):
-                raise ValueError(
-                    f"prior_cov shape {prior_cov.shape} does not match size {self.size}."
-                )
-            self.prior_cov = prior_cov
-        self._sl = None
-
-    @property
-    def sl(self) -> slice:
-        """Slice of concatenated parameter vector corresponding to this group."""
-        if self._sl is None:
-            raise ValueError("Slice has not been assigned yet.")
-        return self._sl
-
-    @sl.setter
-    def sl(self, value: slice):
-        self._sl = value
-
-
-class ObParamCollection:
-    _pgs: tuple[ObParam, ...]
-    _total_theta: int
-    _theta_init: Array
-    _theta_cov: Array
-
-    def __init__(self, obs: tuple[Observation, ...]):
-        """Build slices to map concatenated observation parameters back to each model.
-
-        Parameters
-        ----------
-        obs : tuple[Observation, ...]
-            Ordered observations that contribute parameter blocks.
-        """
-        param_groups_all = [b for ob in obs for b in ob.param_groups]
-        if len(param_groups_all) != len(set(pg.name for pg in param_groups_all)):
-            raise ValueError("Observation parameter names must be unique.")
-        # Narrow to unique parameter groups
-        param_groups = []
-        seen = set()
-        for pg in param_groups_all:
-            if pg.name not in seen:
-                param_groups.append(pg)
-                seen.add(pg.name)
-        self._pgs = tuple(param_groups)
-
-        self._total_theta = sum([pg.size for pg in self._pgs])
-        self._theta_init = jnp.concatenate([pg.init_value for pg in self._pgs])
-        self._theta_cov = jax.scipy.linalg.block_diag(*[pg.prior_cov for pg in self._pgs])
-
-        # Add slice of parameter vector to each group
-        start = 0
-        for pg in self._pgs:
-            end = start + pg.size
-            pg.sl = slice(start, end)
-            start = end
-
-    @property
-    def param_groups(self):
-        """All unique observation parameter groups."""
-        return self._pgs
-
-    @property
-    def theta_init(self):
-        """Initial parameter vector for all observation parameters."""
-        return self._theta_init
-
-    @property
-    def total_theta(self):
-        """Total number of observation parameters."""
-        return self._total_theta
-
-    @property
-    def theta_cov(self):
-        """Prior covariance matrix for all observation parameters."""
-        return self._theta_cov
-
-
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class Step:
@@ -191,15 +67,15 @@ class Step:
 class ObservationManager:
     """Helper for batching heterogeneous observations into aligned time steps."""
 
-    obs: Tuple[Observation, ...]
+    obs: tuple[Observation, ...]
     n_obs: int
     n_steps: int
-    steps: Tuple[Step, ...]
+    steps: tuple[Step, ...]
     steps_batched: Step
-    # meas: Tuple[Measurement, ...]
+    # meas: tuple[Measurement, ...]
     # meas_batched: Measurement
     t_all: Array
-    hxs: Tuple[Callable, ...]
+    hxs: tuple[Callable, ...]
     hx: Callable
     dhx: Callable
     hx_and_dhx: Callable
@@ -244,7 +120,7 @@ class ObservationManager:
 
     def construct_steps(
         self,
-        obs: Tuple[Observation, ...],
+        obs: tuple[Observation, ...],
         t_start: float | None = None,
         t_end: float | None = None,
         dt_max: float = 1,
@@ -253,7 +129,7 @@ class ObservationManager:
 
         Parameters
         ----------
-        obs : Tuple[Observation, ...]
+        obs : tuple[Observation, ...]
             Observations to combine.
         t_start : float | None, optional
             Start time override; defaults to earliest observation start.
@@ -331,7 +207,7 @@ class ObservationManager:
 
         def h_with_aux(
             x: Array, t: Array, params: Array, idx: Array
-        ) -> Tuple[Array, Array]:
+        ) -> tuple[Array, Array]:
             z = hx_dispatcher(x, t, params, idx)
             return z, z
 

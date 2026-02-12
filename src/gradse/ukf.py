@@ -198,12 +198,12 @@ class UnscentedKalmanFilter:
         self.residual_y = jnp.subtract
         self.mean_fn = None
 
-    def _fx(self, x: Array, dt: float = 0.1) -> Array:
-        x_ = self.dsys.rk_integrate(x, dt, dt_max=self.dt_int_max)
+    def _fx(self, x: Array, dt: float = 0.1, params = jnp.array([])) -> Array:
+        x_ = self.dsys.rk_integrate(x, dt, dt_max=self.dt_int_max, params=params)
         return x_
 
     @partial(jax.jit, static_argnames=["self"])
-    def compute_process_sigmas(self, dt: float, x: Array, P: Array) -> Array:
+    def compute_process_sigmas(self, dt: float, x: Array, P: Array, params: Array) -> Array:
         """
         computes the values of sigmas_f. Normally a user would not call
         this, but it is useful if you need to call update more than once
@@ -228,8 +228,8 @@ class UnscentedKalmanFilter:
 
         # calculate sigma points for given mean and covariance
         sigmas = self.sigma_points_fn.sigma_points(x, P)
-        sigma_f_batch = jax.vmap(self._fx, in_axes=(0, None))
-        return sigma_f_batch(sigmas, dt)
+        sigma_f_batch = jax.vmap(self._fx, in_axes=(0, None, None))
+        return sigma_f_batch(sigmas, dt, params)
 
     @partial(jax.jit, static_argnames=["self"])
     def cross_variance(
@@ -274,6 +274,7 @@ class UnscentedKalmanFilter:
         x: Array,
         P: Array,
         Q: Array,
+        params: Array = jnp.array([]),
     ) -> tuple[Array, Array]:
         """Predict state mean and covariance forward by dt.
 
@@ -294,7 +295,7 @@ class UnscentedKalmanFilter:
             Predicted mean state and covariance.
         """
 
-        sigmas_f = self.compute_process_sigmas(dt, x, P)
+        sigmas_f = self.compute_process_sigmas(dt, x, P, params)
 
         x_pr, P_pr = unscented_transform(
             sigmas_f,
@@ -315,7 +316,7 @@ class UnscentedKalmanFilter:
         _hx: Callable[[Array, Array, Array, int], Array],
         ob_idx,
         t: Array,
-        theta_obs: Array,
+        params: Array,
         hx_batch_enabled: bool = True,
     ) -> tuple[Array, Array, Array]:
         """Perform the measurement update step.
@@ -336,8 +337,8 @@ class UnscentedKalmanFilter:
             Observation index for dispatch.
         t : Array
             Timestamp for the measurement.
-        theta_obs : Array
-            Observation parameter vector.
+        params : Array
+            Parameter vector.
         hx_batch_enabled : bool, optional
             Whether `_hx` supports batched sigma points, by default True.
 
@@ -360,9 +361,9 @@ class UnscentedKalmanFilter:
 
         # If _hx cann't take batch inputs, use vmap:
         if hx_batch_enabled:
-            sigmas_h = _hx(sigmas_f, t, theta_obs, ob_idx)
+            sigmas_h = _hx(sigmas_f, t, params, ob_idx)
         else:
-            sigmas_h = jax.vmap(lambda s: _hx(s, t, theta_obs, ob_idx))(sigmas_f)
+            sigmas_h = jax.vmap(lambda s: _hx(s, t, params, ob_idx))(sigmas_f)
         sigmas_h = jnp.atleast_2d(sigmas_h)
 
         zp, S = unscented_transform(sigmas_h, self.Wm, self.Wc, R)
@@ -389,7 +390,7 @@ class UnscentedKalmanFilter:
         return x_post, P_post, ll
 
     @partial(jax.jit, static_argnames=["self"])
-    def rts_smoother(self, xs: Array, Ps: Array, Qs: Array, dts: Array):
+    def rts_smoother(self, xs: Array, Ps: Array, Qs: Array, dts: Array, params: Array):
         """Run Rauch–Tung–Striebel smoothing over a forward pass.
 
         Parameters
@@ -427,7 +428,7 @@ class UnscentedKalmanFilter:
         sigma_points_dual_fn = MerweScaledSigmaPoints(
             2 * self.dsys.n_x, alpha=0.9, beta=2.0, kappa=0, method="eigen"
         )  # Dual sigma points for smoother
-        sigma_f_batch = jax.jit(jax.vmap(self._fx, in_axes=(0, None)))
+        sigma_f_batch = jax.jit(jax.vmap(self._fx, in_axes=(0, None, None)))
         res_vmap = jax.jit(jax.vmap(self.residual_x, in_axes=(0, None)))
         weighted_outer_vmap = jax.jit(
             jax.vmap(
@@ -451,7 +452,7 @@ class UnscentedKalmanFilter:
 
             # create sigma points from state estimate, pass through state func
             sigmas = self.sigma_points_fn.sigma_points(xs[k], Ps[k])
-            sigmas_f = self.compute_process_sigmas(dts[step_idx], xs[k], Ps[k])
+            sigmas_f = self.compute_process_sigmas(dts[step_idx], xs[k], Ps[k], params)
             xb, Pb = UT(sigmas_f, self.Wm, self.Wc, Qs[step_idx])
 
             # Optionally calculate a weighting factor for Q EM step
@@ -479,7 +480,7 @@ class UnscentedKalmanFilter:
             sigma_points_dual = sigma_points_dual_fn.sigma_points(x_joint, P_joint)
             sigma_points_k = sigma_points_dual[:, : self.dsys.n_x]
             sigma_points_k1 = sigma_points_dual[:, self.dsys.n_x :]
-            sigma_points_k_f = sigma_f_batch(sigma_points_k, dts[step_idx])
+            sigma_points_k_f = sigma_f_batch(sigma_points_k, dts[step_idx], params)
             residuals = sigma_points_k1 - sigma_points_k_f
             Q_st = Q_st.at[k].set(
                 jnp.sum(

@@ -1,16 +1,76 @@
+from __future__ import annotations
+import jax
 import jax.numpy as jnp
 from jax import Array
 import numpy as np
 import yaml
 from rich.pretty import pprint
 
-from gradse.observation import Observation, ObParamCollection
+from gradse.param import Param
+from gradse.observation import Observation
 from gradse.dynsys import DynamicSystem
 from gradse.results import log_likelihood
 
 
+class ObParamCollection:
+    _pgs: tuple[Param, ...]
+    _total_theta: int
+    _theta_init: Array
+    _theta_cov: Array
+
+    def __init__(self, obs: tuple[Observation, ...], sys: DynamicSystem):
+        """Build slices to map concatenated observation parameters back to each model.
+
+        Parameters
+        ----------
+        obs : tuple[Observation, ...]
+            Ordered observations that contribute parameter blocks.
+        """
+        param_groups_all = [b for ob in obs for b in ob.param_groups] + list(sys.param_groups)
+        # Narrow to unique parameter groups
+        param_groups = []
+        seen = set()
+        for pg in param_groups_all:
+            if pg.name not in seen:
+                param_groups.append(pg)
+                seen.add(pg.name)
+        self._pgs = tuple(param_groups)
+
+        self._total_theta = sum([pg.size for pg in self._pgs])
+        self._theta_init = jnp.concatenate([pg.init_value for pg in self._pgs])
+        self._theta_cov = jax.scipy.linalg.block_diag(*[pg.prior_cov for pg in self._pgs])
+
+        # Add slice of parameter vector to each group
+        start = 0
+        for pg in self._pgs:
+            end = start + pg.size
+            pg.sl = slice(start, end)
+            start = end
+
+    @property
+    def param_groups(self):
+        """All unique observation parameter groups."""
+        return self._pgs
+
+    @property
+    def theta_init(self):
+        """Initial parameter vector for all observation parameters."""
+        return self._theta_init
+
+    @property
+    def total_theta(self):
+        """Total number of observation parameters."""
+        return self._total_theta
+
+    @property
+    def theta_cov(self):
+        """Prior covariance matrix for all observation parameters."""
+        return self._theta_cov
+
+
 class ParamUnpacker:
     """Convert a flat parameter vector into process noise, state, and observation terms."""
+
     def __init__(
         self,
         sys: DynamicSystem,
@@ -46,7 +106,7 @@ class ParamUnpacker:
 
         self.sys = sys
         self.eps = eps
-        opc = ObParamCollection(obs)
+        opc = ObParamCollection(obs, sys)
 
         # Deterministic ordering of state indices for process noise mapping
         self._state_order = sorted(
@@ -82,12 +142,10 @@ class ParamUnpacker:
         # self.q0 = self.get_q0()
         self.S = jnp.sqrt(jnp.diag(self.Q_0)) * jnp.eye(self.sys.n_x)
 
-
-
-        # Observation parameters
-        self.theta_ob_pg = opc.param_groups
-        self.theta_ob_init = opc.theta_init
-        self.theta_ob_cov = opc.theta_cov
+        # Observation and dynamical system parameters
+        self.theta_params_pg = opc.param_groups
+        self.theta_params_init = opc.theta_init
+        self.theta_params_cov = opc.theta_cov
 
         self.theta_scale = jnp.full(self.n_total, 1.0)
 
@@ -105,19 +163,20 @@ class ParamUnpacker:
             Updates internal `theta_scale`.
         """
         mean = jnp.mean(jnp.abs(jac))
-        eps = self.eps
+        eps = self.eps ** 0.5
         self.theta_scale = self.theta_scale.at[self.q_slice].set(
             mean
-            / jnp.clip(jnp.abs(jac[self.q_slice]), min=eps**0.5, max=1 / (eps**0.5))
+            / jnp.clip(jnp.abs(jac[self.q_slice]), min=eps, max=1 / (eps))
         )
-        mean_ob = mean / jnp.clip(
-            jnp.mean(jnp.abs(jac[self.ob_slice])), min=eps**0.5, max=1 / (eps**0.5)
-        )
+        # mean_ob = mean / jnp.clip(
+        #     jnp.mean(jnp.abs(jac[self.ob_slice])), min=eps**0.5, max=1 / (eps**0.5)
+        # )
         self.theta_scale = self.theta_scale.at[self.ob_slice].set(
-            jnp.full(self.n_ob, mean_ob)
+            mean / jnp.clip(jnp.abs(jac[self.ob_slice]), min=eps, max=1 / (eps))
         )
         self.theta_scale = self.theta_scale.at[self.x0_slice].set(
-            mean / jnp.clip(jnp.abs(jac[self.x0_slice]), min=eps**0.5, max=1 / (eps**0.5))
+            mean
+            / jnp.clip(jnp.abs(jac[self.x0_slice]), min=eps, max=1 / (eps))
         )
 
     def x0(self, theta):
@@ -134,7 +193,6 @@ class ParamUnpacker:
             Initial state estimate and prior log-likelihood.
         """
         theta = theta[self.x0_slice]
-        # scale = self.theta_scale[self.x0_slice]
         x0 = self.x0_pr + theta * self.theta_scale[self.x0_slice]
         ll_x0 = log_likelihood(x0, self.x0_pr, self.P0_pr)
         return x0, ll_x0
@@ -164,21 +222,19 @@ class ParamUnpacker:
         odc = 0
         ordered_idx = sorted(self.q_idx_init.keys())
         for i, x_idx in enumerate(ordered_idx):  # colum
-            for x_jdx in ordered_idx[: i + 1]: # row
+            for x_jdx in ordered_idx[: i + 1]:  # row
                 if x_idx == x_jdx:
-                    L = L.at[x_idx, x_jdx].set(
-                        1 + theta_d[dc] * theta_scale_d[dc]
-                    )
+                    L = L.at[x_idx, x_jdx].set(1 + theta_d[dc] * theta_scale_d[dc])
                     dc += 1
                 else:
                     L = L.at[x_idx, x_jdx].set(
-                        alpha*jnp.tanh(theta_od[odc] * theta_scale_od[odc]) 
+                        alpha * jnp.tanh(theta_od[odc] * theta_scale_od[odc])
                     )
                     odc += 1
         Q_c = self.S @ L @ L.T @ self.S
         return Q_c
 
-    def ob_param(self, theta):
+    def params(self, theta):
         """Return observation parameters and their prior log-likelihood.
 
         Parameters
@@ -190,11 +246,13 @@ class ParamUnpacker:
         -------
         tuple[Array, Array]
             Observation parameters and prior log-likelihood.
+
+        Note: Now params also incorporate dynamic system, should rename accordingly.
         """
-        params = self.theta_ob_init + (
+        params = self.theta_params_init + (
             theta[self.ob_slice] * self.theta_scale[self.ob_slice]
         )
-        ll_ob = log_likelihood(params, self.theta_ob_init, self.theta_ob_cov)
+        ll_ob = log_likelihood(params, self.theta_params_init, self.theta_params_cov)
         return params, ll_ob
 
     @property
@@ -258,13 +316,13 @@ class ParamUnpacker:
         result_dict = {"Q_diag": {}, "x0": {}, "bias": {}}
         Q_diag = jnp.diag(self.Qc(theta))
         x0, _ = self.x0(theta)
-        ob_param, _ = self.ob_param(theta)
+        params, _ = self.params(theta)
 
         for q, x_idx in zip(Q_diag, self.sys.x_idx.values()):
             result_dict["Q_diag"][f"q_{x_idx}"] = float(q)
         for key, value in self.sys.x_idx.items():
             result_dict["x0"][f"{key}_0"] = float(x0[value])
-        for pg in self.theta_ob_pg:
+        for pg in self.theta_params_pg:
             for i in range(pg.size):
-                result_dict["bias"][f"{pg.name}_{i}"] = float(ob_param[pg.sl][i])
+                result_dict["bias"][f"{pg.name}_{i}"] = float(params[pg.sl][i])
         return result_dict

@@ -5,6 +5,8 @@ import jax.numpy as jnp
 from functools import partial
 from dataclasses import dataclass
 
+from gradse.param import Param
+
 
 @dataclass(frozen=True)
 class StateMap:
@@ -37,6 +39,17 @@ class DynamicSystem(ABC):
 
     """
 
+    param_groups: tuple[Param, ...]
+
+    def __init__(self, param_groups: tuple[Param, ...] = ()):
+        self.param_groups = param_groups
+        self.set_init_params()
+
+    def set_init_params(self) -> None:
+        for pg in self.param_groups:
+            setattr(self, pg.name, pg.init_value)
+
+
     @property
     @abstractmethod
     def x_idx(self) -> dict[str, int]:
@@ -47,8 +60,12 @@ class DynamicSystem(ABC):
     def n_x(self) -> int:
         return len(self.x_idx)
 
+    def unpack_params(self, params: Array) -> dict[str, Array]:
+        """Unpack flat parameter array into individual parameter groups."""
+        return {pg.name: params[pg.sl] for pg in self.param_groups}
+
     @abstractmethod
-    def ode(self, x: Array) -> Array:
+    def ode(self, x: Array, params: Array) -> Array:
         """Ordinary differential equation of the dynamic system.
 
         Parameters
@@ -63,7 +80,7 @@ class DynamicSystem(ABC):
         """
         ...
 
-    def _step(self, dt: float, x: Array) -> Array:
+    def _step(self, dt: float, x: Array, params: Array) -> Array:
         """Advance the state by dt using a single RK4 step.
 
         Parameters
@@ -78,14 +95,14 @@ class DynamicSystem(ABC):
         Array
             State propagated by one RK4 step.
         """
-        k1 = self.ode(x)
-        k2 = self.ode(x + (dt / 2) * k1)
-        k3 = self.ode(x + (dt / 2) * k2)
-        k4 = self.ode(x + dt * k3)
+        k1 = self.ode(x, params)
+        k2 = self.ode(x + (dt / 2) * k1, params)
+        k3 = self.ode(x + (dt / 2) * k2, params)
+        k4 = self.ode(x + dt * k3, params)
         x_ = x + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
         return x_
 
-    def multiple_steps_scan(self, x: Array, dt: float, n_steps: int = 1):
+    def multiple_steps_scan(self, x: Array, dt: float, n_steps: int = 1, params = jnp.array([])) -> Array:
         """Integrate over dt using n_steps RK4 substeps.
 
         Parameters
@@ -106,13 +123,13 @@ class DynamicSystem(ABC):
 
         def scan_step(carry, _):
             (x,) = carry
-            x_new = self._step(dt_step, x)
+            x_new = self._step(dt_step, x, params)
             return (x_new,), x_new
 
         (x,), _ = jax.lax.scan(scan_step, (x,), None, length=n_steps)
         return x
 
-    def rk_integrate(self, x: Array, dt: float, dt_max: float = 0.5) -> Array:
+    def rk_integrate(self, x: Array, dt: float, dt_max: float = 0.5, params = jnp.array([])) -> Array:
         """Integrate in time using RK4 integrator.
 
         Ensure maximum step size does not exceed that specified.
@@ -135,11 +152,11 @@ class DynamicSystem(ABC):
             State after integrating over dt.
         """
         # One step
-        x = self._step(dt, x)
+        x = self._step(dt, x, params)
         return x
 
     @partial(jax.jit, static_argnames=["self"])
-    def jac(self, x: Array) -> Array:
+    def jac(self, x: Array, params: Array = jnp.array([])) -> Array:
         """Jacobian of the system ODE with respect to x.
 
         Parameters
@@ -154,7 +171,7 @@ class DynamicSystem(ABC):
         """
         x = jnp.array(x)
         jac_fn = jax.jacobian(self.ode, argnums=0)
-        jac = jac_fn(x)
+        jac = jac_fn(x, params)
         return jac
 
     @partial(jax.jit, static_argnames=["self"])
