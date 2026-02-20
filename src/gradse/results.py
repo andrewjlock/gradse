@@ -31,6 +31,7 @@ class RTSResult:
         sys,
         x_rts,
         P_rts,
+        P_total = None,
         ecef_ref=jnp.array([0, 0, 0]),
     ):
         """Bundle RTS smoother outputs and convenience exports.
@@ -61,6 +62,10 @@ class RTSResult:
         )
         self.x_rts = x_rts
         self.P_rts = np.array(P_rts)
+        if P_total is None:
+            P_total = self.P_rts
+        else:
+            self.P_total = np.array(P_total)
         self.P_diag = np.array([np.diagonal(p) for p in P_rts])
         self.x_idx = sys.x_idx
         self.t = np.array(forward_result.t)

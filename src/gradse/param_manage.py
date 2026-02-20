@@ -26,7 +26,9 @@ class ObParamCollection:
         obs : tuple[Observation, ...]
             Ordered observations that contribute parameter blocks.
         """
-        param_groups_all = [b for ob in obs for b in ob.param_groups] + list(sys.param_groups)
+        param_groups_all = [b for ob in obs for b in ob.param_groups] + list(
+            sys.param_groups
+        )
         # Narrow to unique parameter groups
         param_groups = []
         seen = set()
@@ -38,7 +40,9 @@ class ObParamCollection:
 
         self._total_theta = sum([pg.size for pg in self._pgs])
         self._theta_init = jnp.concatenate([pg.init_value for pg in self._pgs])
-        self._theta_cov = jax.scipy.linalg.block_diag(*[pg.prior_cov for pg in self._pgs])
+        self._theta_cov = jax.scipy.linalg.block_diag(
+            *[pg.prior_cov for pg in self._pgs]
+        )
 
         # Add slice of parameter vector to each group
         start = 0
@@ -163,10 +167,9 @@ class ParamUnpacker:
             Updates internal `theta_scale`.
         """
         mean = jnp.mean(jnp.abs(jac))
-        eps = self.eps ** 0.5
+        eps = self.eps**0.5
         self.theta_scale = self.theta_scale.at[self.q_slice].set(
-            mean
-            / jnp.clip(jnp.abs(jac[self.q_slice]), min=eps, max=1 / (eps))
+            mean / jnp.clip(jnp.abs(jac[self.q_slice]), min=eps, max=1 / (eps))
         )
         # mean_ob = mean / jnp.clip(
         #     jnp.mean(jnp.abs(jac[self.ob_slice])), min=eps**0.5, max=1 / (eps**0.5)
@@ -175,8 +178,7 @@ class ParamUnpacker:
             mean / jnp.clip(jnp.abs(jac[self.ob_slice]), min=eps, max=1 / (eps))
         )
         self.theta_scale = self.theta_scale.at[self.x0_slice].set(
-            mean
-            / jnp.clip(jnp.abs(jac[self.x0_slice]), min=eps, max=1 / (eps))
+            mean / jnp.clip(jnp.abs(jac[self.x0_slice]), min=eps, max=1 / (eps))
         )
 
     def x0(self, theta):
@@ -323,6 +325,28 @@ class ParamUnpacker:
         for key, value in self.sys.x_idx.items():
             result_dict["x0"][f"{key}_0"] = float(x0[value])
         for pg in self.theta_params_pg:
-            for i in range(pg.size):
-                result_dict["bias"][f"{pg.name}_{i}"] = float(params[pg.sl][i])
+            result_dict["bias"][f"{pg.name}"] = [
+                float(params[pg.sl][i]) for i in range(pg.size)
+            ]
         return result_dict
+
+    def unpack_param_hess_inv(self, hess_inv):
+        """Extract parameter uncertainties from MLE optimisation inverse hessian
+
+        Parameters
+        ----------
+        hess_inv : Array
+            Full inverse Hessian matrix for all parameters from MLE.
+
+        Returns
+        -------
+        dict[str, Array]
+            Mapping of parameter group names to their uncertainty estimates (diagonal of covariance).
+        """
+
+        # Extract the relevant covariance blocks for each parameter group
+        pg_dict = {}
+        for pg in self.theta_params_pg:
+            pg_dict[pg.name] = np.diag(hess_inv[self.ob_slice][pg.sl][pg.sl])
+
+        return pg_dict

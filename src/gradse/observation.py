@@ -72,8 +72,6 @@ class ObservationManager:
     n_steps: int
     steps: tuple[Step, ...]
     steps_batched: Step
-    # meas: tuple[Measurement, ...]
-    # meas_batched: Measurement
     t_all: Array
     hxs: tuple[Callable, ...]
     hx: Callable
@@ -192,13 +190,6 @@ class ObservationManager:
             lambda *xs: jnp.stack(xs, axis=0), *self.steps
         )
 
-        # We need all hx functions to take the same shape of parameters, so we wrap each hx
-        # to only use its own slice of the full parameter vector.
-
-        # def make_hx(f):
-        #     return lambda x, t, params: f(x, t, params)
-        #
-        # hx_list = [make_hx(ob.hx) for ob in zip(obs)]
         hx_list = [ob.hx for ob in obs]
 
         @jax.jit
