@@ -33,6 +33,8 @@ class RTSResult:
         P_rts,
         P_total = None,
         ecef_ref=jnp.array([0, 0, 0]),
+        theta_cov = None,
+        dx_dtheta = None,
     ):
         """Bundle RTS smoother outputs and convenience exports.
 
@@ -70,6 +72,8 @@ class RTSResult:
         self.x_idx = sys.x_idx
         self.t = np.array(forward_result.t)
         self.delta_t = np.array(forward_result.delta_t)
+        self.theta_cov = theta_cov
+        self.dx_dtheta = dx_dtheta
 
     def export(self, filepath):
         """Save the RTS results to a CSV file.
